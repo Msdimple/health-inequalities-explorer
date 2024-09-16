@@ -5,11 +5,23 @@ library(compositr)
 library(sf)
 library(IMD)
 library(ggridges)
+library(DEPAHRI)
+library(demographr)
+library(loneliness)
 
+# ---- Create lookups ----
 icb <- boundaries_icb22 |>
   st_drop_geometry() |>
   mutate(icb22_name = str_remove_all(icb22_name, "^NHS ")) |>
   mutate(icb22_name = str_remove_all(icb22_name, " Integrated Care Board$"))
+
+lsoa_icb <- lookup_lsoa11_sicbl22_icb22_ltla22 |>
+  distinct(lsoa11_code, icb22_code)
+
+population_lsoa <-
+  population20_lsoa11 |>
+  select(lsoa11_code, total_population) |>
+  filter(str_detect(lsoa11_code, "^E"))
 
 # ---- IMD score ----
 # Decile 1 = most deprived
@@ -34,70 +46,216 @@ imd <- imd_england_lsoa |>
   mutate(variable = "Deprivation", .after = icb22_code) |>
   select(-top_10, -n, -freq, -total_number_lsoas)
 
-# ---- ONS Health Index ----
-# Higher score = better health
-# Higher rank (calculated here) = better health
-# Source: https://www.ons.gov.uk/peoplepopulationandcommunity/healthandsocialcare/healthandwellbeing/datasets/healthindexscoresintegratedcaresystemsengland
-url <- "https://www.ons.gov.uk/file?uri=/peoplepopulationandcommunity/healthandsocialcare/healthandwellbeing/datasets/healthindexscoresintegratedcaresystemsengland/current/healthindexscoresintegratedcaresystemsengland.xlsx"
-
-raw <- download_file(
-  url,
-  ".xlsx"
-)
-
-health_index_raw <- read_excel(raw, sheet = "Table_2_Index_scores", skip = 2)
-
-health_index <- health_index_raw |>
-  select(icb22_code = `Area Code`, number = `2021`) |>
-  mutate(number = rank(number)) |>
-  mutate(percent = NA) |>
-  mutate(variable = "ONS Health \nIndex rank") |>
-  relocate(variable, .after = icb22_code)
 
 # ---- % Left-behind areas ----
 # Higher number/percent = more left-behind
 
-# Wards / ICBs are not coterminous. Solution (to work backwards):
-#   1. Do a ward to LSOA lookup to assign LSOA's as left-behind or not.
-#   2. Lookup LSOAs to ICBS (note: LSOAs are coterminous with ICBs).
-#   3. Count the percentage of left-behind LSOAs per ICB.
-# Limitation: it assumes all smaller areas share the property of the larger area
-# which is likely not to be the case. This means that areas can be wrongly
-# assigned as left-behind when this is not actually the case. Given wards are
-# already small areas, the effects of this should be low.
+# ---- 2021 left-behind LSOA's to 2011 LSOA's ----
+lsoa_lsoa <- lookup_lsoa11_lsoa21_ltla22 |>
+  filter(str_detect(lsoa21_code, "^E")) |>
+  distinct(lsoa11_code, lsoa21_code, change_code) |>
+  relocate(change_code, .after = lsoa21_code)
 
-# Step 1.
-lba_lsoas <- lookup_lsoa11_ward17 |>
-  filter(str_detect(lsoa11_code, "^E")) |> # Step 1
-  left_join(cni_england_ward17) |>
-  select(lsoa11_code, ward17_code, left_behind = `Left Behind Area?`) |>
-  # Note that 7 LSOAs are assigned NA. These LSOAs are in City of London of
-  # Isles of Scilly which are not left-behind areas.
-  mutate(left_behind = if_else(is.na(left_behind), FALSE, left_behind))
+# Change codes:
+# - U = Unchanged - 31,810 LSOAs remained unchanged from 2011 to 2021
+# - S = Split - 834 LSOAs were split from 2011 to 2021
+# - M = Merged - 194 LSOAs were merged from 2011 to 2021
+# - X = Fragmented - 6 LSOAs were fragmented from 2011 to 2021
 
-# Step 2.
-lba_icbs <- lba_lsoas |>
-  left_join(lookup_lsoa11_sicbl22_icb22_ltla22) |>
-  select(icb22_code, left_behind)
+# Aggregation stategy going from 2021 codes to 2011 codes:
+# - change_code == "U": no action required
+# - change_code == "S": if ANY of the 2021 LSOAs resulting from the split is
+#   left behind, 2011 LSOA is considered left-behind
+# - change_code == "M": 2011 LSOA's inherit the left-behind characteristics of
+#   the 2021 LSOA that resulted from the merge: if the 2021 LSOA is left behind,
+#   all corresponding 2011 LSOA's are considered left-behind, and vice versa
+# - change_code == "X": 2011 LSOA's inherit the left behind characteristics of
+#   their corresponding 2021 LSOA. Then group by 2011 LSOA, if any is
+#   left-behind, consider the LSOA left-behind
+aggregate_lba_lsoas <- function(data) {
+  data_u <- data |>
+    left_join(lsoa_lsoa) |>
+    filter(change_code == "U") |>
+    select(lsoa11_code, lba = `Left Behind Area?`)
 
-# Step 3.
-lba <- lba_icbs |>
-  group_by(icb22_code, left_behind) |>
-  summarise(n = n()) |>
-  mutate(freq = n / sum(n)) |>
-  mutate(total_number_lsoas = sum(n)) |>
+  data_s <- data |>
+    left_join(lsoa_lsoa) |>
+    relocate(lsoa11_code) |>
+    filter(change_code == "S") |>
+    group_by(lsoa11_code) |>
+    summarize(lba = any(`Left Behind Area?` == TRUE)) |>
+    ungroup()
+
+  data_m <- data |>
+    left_join(lsoa_lsoa) |>
+    relocate(lsoa11_code) |>
+    filter(change_code == "M") |>
+    select(lsoa11_code, lba = `Left Behind Area?`)
+
+  data_x <- data |>
+    left_join(lsoa_lsoa) |>
+    relocate(lsoa11_code) |>
+    filter(change_code == "X") |>
+    group_by(lsoa11_code) |>
+    summarize(lba = any(`Left Behind Area?` == TRUE)) |>
+    ungroup()
+
+  data_aggregated <- bind_rows(data_u, data_s, data_m, data_x)
+
+  data_aggregated
+}
+
+lba <-
+  aggregate_lba_lsoas(cni2023_england_lsoa21) |>
+  left_join(lsoa_icb) |>
+  group_by(icb22_code) |>
+  count(lba) |>
+  mutate(percent = n / sum(n)) |>
   ungroup() |>
-  filter(left_behind == FALSE) |> # Not all ICBs have left-behind LSOAs
-  mutate(number = total_number_lsoas - n) |>
-  mutate(percent = 1 - freq) |>
-  mutate(variable = "Left-behind areas", .after = icb22_code) |>
-  select(-left_behind, -n, -freq, -total_number_lsoas)
+  filter(lba == TRUE) |>
+  right_join(icb) |>
+  mutate(percent = replace_na(percent, 0)) |>
+  mutate(n = replace_na(n, 0)) |>
+  select(icb22_code, number = n, percent) |>
+  mutate(variable = "Left-behind areas", .after = icb22_code)
 
-# ---- Combine & reanme (pretty printing) ----
+# ---- DEPHARI - digital only ----
+# Isolate digital access to healthcare from DEPAHRI
+# Data is at LSOA level: need to aggregate to ICB level using calculate_extent
+# Extent is the proportion of the local population that live in areas
+# classified as among the most deprived (here at risk) in the higher geography
+# Higher score = higher risk of exclusion
+# Higher rank (calculated here) = higher risk of exclusion
+deri_lsoa <-
+  england_lsoa_depahri |>
+  left_join(lsoa_icb) |>
+  distinct(lsoa11_code, deri_score_national, icb22_code) |>
+  left_join(population_lsoa)
+
+deri <-
+  calculate_extent(deri_lsoa,
+    deri_score_national,
+    icb22_code,
+    total_population,
+    weight_high_scores = TRUE
+  ) |>
+  mutate(number = rank(extent)) |>
+  select(-extent) |>
+  mutate(
+    variable = "Access to Healthcare - Digital",
+    .after = icb22_code
+  ) |>
+  mutate(percent = NA, .after = number)
+
+# ---- DEPHARI - physical only ----
+# Isolate physical access to healthcare from DEPAHRI
+# Score made up of equal weighting of demography, deprivation and physical access
+# Data is at LSOA level: need to aggregate to ICB level using calculate_extent
+# Higher score = higher risk of exclusion
+# Higher rank (calculated here) = higher risk of exclusion
+physical_lsoa <-
+  england_lsoa_depahri |>
+  mutate(
+    physical_score =
+      demography_comp_national * 0.33 +
+        deprivation_comp_national * 0.33 +
+        health_access_comp_national * 0.33
+  ) |>
+  left_join(lsoa_icb) |>
+  distinct(lsoa11_code, physical_score, icb22_code) |>
+  left_join(population_lsoa)
+
+physical_access <-
+  calculate_extent(physical_lsoa,
+    physical_score,
+    icb22_code,
+    total_population,
+    weight_high_scores = TRUE
+  ) |>
+  mutate(number = rank(extent)) |>
+  select(-extent) |>
+  mutate(
+    variable = "Access to Healthcare - Physical",
+    .after = icb22_code
+  ) |>
+  mutate(percent = NA, .after = number)
+
+# ---- Loneliness score ----
+# Higher percentage / number = worse health
+
+# Convert LSOA'21 to LSOA'11 codes
+# Aggregation strategy going from 2021 codes to 2011 codes:
+# - change_code == "U": no action required
+# - change_code == "S": take the average score of the 2021 LSOA
+# - change_code == "M": 2011 LSOA inherits the score of the 2021 LSOA
+# - change_code == "X": 2011 LSOA inherits the score of 2021 LSOA.
+#   then group by 2011 LSOA
+
+aggregate_loneliness_lsoas <- function(data) {
+  data_u <- data |>
+    left_join(lsoa_lsoa) |>
+    filter(change_code == "U") |>
+    select(lsoa11_code, perc)
+
+  data_s <- data |>
+    left_join(lsoa_lsoa) |>
+    filter(change_code == "S") |>
+    group_by(lsoa11_code) |>
+    summarize(perc = mean(perc, na.rm = TRUE), ) |>
+    ungroup()
+
+  data_m <- data |>
+    left_join(lsoa_lsoa) |>
+    relocate(lsoa11_code) |>
+    filter(change_code == "M") |>
+    select(lsoa11_code, perc)
+
+  data_x <- data |>
+    left_join(lsoa_lsoa) |>
+    filter(change_code == "X") |>
+    group_by(lsoa11_code) |>
+    summarize(perc = mean(perc, na.rm = TRUE), ) |>
+    ungroup()
+
+  data_aggregated <- bind_rows(data_u, data_s, data_m, data_x)
+
+  data_aggregated
+}
+
+# Used mean weighted by population size to aggregate to icb from lsoa
+loneliness_lsoa <-
+  aggregate_loneliness_lsoas(england_cls_loneliness_lsoa) |>
+  left_join(lsoa_icb) |>
+  left_join(population_lsoa)
+
+loneliness <- loneliness_lsoa |>
+  group_by(icb22_code) |>
+  summarise(percent = weighted.mean(perc, w = total_population, na.rm = TRUE)) |>
+  mutate(
+    variable = "Loneliness",
+    .after = icb22_code
+  ) |>
+  mutate(percent = percent / 100) |>
+  mutate(number = NA, .before = percent)
+
+# loneliness <-
+#   calculate_extent(loneliness_lsoa,
+#                    perc,
+#                    icb22_code,
+#                    total_population,
+#                    weight_high_scores = TRUE) |>
+#   rename(percent = extent) |>
+#   mutate(variable = "Loneliness", .after = icb22_code) |>
+#   mutate(number = NA, .after = variable)
+
+
+# ---- Combine & rename (pretty printing) ----
 metrics_joined <- bind_rows(
   imd,
   lba,
-  health_index
+  deri,
+  physical_access,
+  loneliness
 ) |>
   left_join(icb) |>
   select(-icb22_code) |>
@@ -116,19 +274,24 @@ icb_summary_metrics_england_scaled <-
     scaled_1_1 = case_when(
       variable == "Deprivation" ~ scale_1_1(percent),
       variable == "Left-behind areas" ~ scale_1_1(percent),
-      variable == "ONS Health \nIndex rank" ~ scale_1_1(number)
+      variable == "Access to Healthcare - Digital" ~ scale_1_1(number),
+      variable == "Access to Healthcare - Physical" ~ scale_1_1(number),
+      variable == "Loneliness" ~ scale_1_1(percent)
     )
   ) |>
   ungroup()
 
 # ---- Align indicator polarity ----
 # Align so higher value = better health
-# Flip IMD and LBA, as currently higher = worse health
+# Flip IMD, LBA, DEPAHRI, loneliness as currently higher = worse health
 england_icb_summary_metrics_polarised <- icb_summary_metrics_england_scaled |>
   mutate(
     scaled_1_1 = case_when(
       variable == "Deprivation" ~ scaled_1_1 * -1,
       variable == "Left-behind areas" ~ scaled_1_1 * -1,
+      variable == "Access to Healthcare - Digital" ~ scaled_1_1 * -1,
+      variable == "Access to Healthcare - Physical" ~ scaled_1_1 * -1,
+      variable == "Loneliness" ~ scaled_1_1 * -1,
       TRUE ~ scaled_1_1
     )
   )
@@ -158,10 +321,20 @@ england_icb_summary_metrics <- england_icb_summary_metrics_polarised |>
         "<br>", "No. of left-behind LSOAs in the ICB: ", round(number),
         "<br>", "Percentage of LSOAs in ICB that are left-behind: ", round(percent * 100, 1), "%"
       ),
-      variable == "ONS Health \nIndex rank" ~ paste0(
+      variable == "Access to Healthcare - Digital" ~ paste0(
         "<b>", area_name, "</b>",
         "<br>",
-        "<br>", "Health Index rank: ", round(number)
+        "<br>", "Digital Access to Healthcare rank: ", round(number)
+      ),
+      variable == "Access to Healthcare - Physical" ~ paste0(
+        "<b>", area_name, "</b>",
+        "<br>",
+        "<br>", "Physical Access to Healthcare rank: ", round(number)
+      ),
+      variable == "Loneliness" ~ paste0(
+        "<b>", area_name, "</b>",
+        "<br>",
+        "<br>", "Percentage of people who 'often', 'always' or 'some of the time' feel lonely: ", round(percent * 100), "%"
       )
     )
   )

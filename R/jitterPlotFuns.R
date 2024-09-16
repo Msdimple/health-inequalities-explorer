@@ -1,24 +1,29 @@
 # ---- Prepare selected data ----
 jitter_plot_prep <- function(data, selected_areas) {
-  data |>
-    mutate(area_name = string_wrap(area_name)) |>
-    mutate(
-      selected = if_else(
-        area_name %in% string_wrap(selected_areas),
-        area_name,
-        "not selected"
-      )
-    ) |>
-    mutate(alpha = if_else(selected != "not selected", 1, 0.1)) |>
-    mutate(selected = factor(selected)) |>
-    mutate(selected = relevel(selected, ref = "not selected"))
+  data$area_name <- string_wrap(data$area_name)
+
+  data$selected <- ifelse(data$area_name %in% string_wrap(selected_areas), data$area_name, "not selected")
+
+  data$alpha <- ifelse(data$selected != "not selected", 1, 0.1)
+
+  # Make 'alpha' a one-level factor
+  data$alpha <- I(data$alpha)
+
+  data$selected <- factor(data$selected)
+
+  if ("not selected" %in% levels(data$selected)) {
+    data$selected <- relevel(data$selected, ref = "not selected")
+  }
+
+  return(data)
 }
 
 # ---- ggplotly fun ----
 ggplotly_default <- function(plot, indicator_count) {
   ggplotly(
     plot,
-    height = indicator_count * 130,
+    height = ifelse(indicator_count == 1, 230, indicator_count * 160),
+    width = 1000,
     tooltip = c("text")
   ) |>
     config(
@@ -64,7 +69,7 @@ ggplotly_default <- function(plot, indicator_count) {
     ) |>
     add_annotations(
       x = 0,
-      y = indicator_count + 0.6,
+      y = indicator_count + 0.8,
       text = "Mean",
       showarrow = F
     )
@@ -130,25 +135,71 @@ jitter_plot_null <- function(data) {
     any(grepl("Younger", unique(data$variable), fixed = TRUE)) &&
       as.character(length(unique(data$variable))) == 11
   ) {
-    plot <- plot +
-      scale_y_discrete(
-        limits = c(
-          "White",
-          "Other ethnic \ngroup",
-          "Mixed or Multiple \nethnic groups",
-          "Black, Black British, \nBlack Welsh, \nCaribbean or African",
-          "Asian, Asian \nBritish or \nAsian Welsh",
-          "Older \nmales (65+)",
-          "Working age \nmales (18-65)",
-          "Younger \nmales (< 18)",
-          "Older \nfemales (65+)",
-          "Working age \nfemales (18-65)",
-          "Younger \nfemales (< 18)"
-        )
-      ) +
-      annotate(geom = "text", x = 0.94, y = 11.4, label = "Age & Gender", colour = "#717171") +
-      geom_hline(yintercept = 5.5, size = 0.1, linetype = "dotted") +
-      annotate(geom = "text", x = 0.99, y = 5.4, label = "Ethnicity", colour = "#717171")
+    if (
+      any(grepl("Younger \nfemales (< 20)", unique(data$variable), fixed = TRUE)) # Northern Ireland LTLA demographics
+    ) {
+      plot <- plot +
+        scale_y_discrete(
+          limits = c(
+            "White",
+            "Other ethnic \ngroup",
+            "Mixed or Multiple \nethnic groups",
+            "Black",
+            "Asian",
+            "Older \nmales (65+)",
+            "Working age \nmales (20-64)",
+            "Younger \nmales (< 20)",
+            "Older \nfemales (65+)",
+            "Working age \nfemales (20-64)",
+            "Younger \nfemales (< 20)"
+          )
+        ) +
+        annotate(geom = "text", x = 0.94, y = 11.4, label = "Age & Gender", colour = "#717171") +
+        geom_hline(yintercept = 5.5, size = 0.1, linetype = "dotted") +
+        annotate(geom = "text", x = 0.99, y = 5.4, label = "Ethnicity", colour = "#717171")
+    } else if (
+      any(grepl("Younger \nfemales (< 16)", unique(data$variable), fixed = TRUE)) # Northern Ireland HSCT demographics
+    ) {
+      plot <- plot +
+        scale_y_discrete(
+          limits = c(
+            "White",
+            "Other ethnic \ngroup",
+            "Mixed or Multiple \nethnic groups",
+            "Black",
+            "Asian",
+            "Older \nmales (65+)",
+            "Working age \nmales (16-64)",
+            "Younger \nmales (< 16)",
+            "Older \nfemales (65+)",
+            "Working age \nfemales (16-64)",
+            "Younger \nfemales (< 16)"
+          )
+        ) +
+        annotate(geom = "text", x = 0.94, y = 11.4, label = "Age & Gender", colour = "#717171") +
+        geom_hline(yintercept = 5.5, size = 0.1, linetype = "dotted") +
+        annotate(geom = "text", x = 0.99, y = 5.4, label = "Ethnicity", colour = "#717171")
+    } else {
+      plot <- plot +
+        scale_y_discrete(
+          limits = c(
+            "White",
+            "Other ethnic \ngroup",
+            "Mixed or Multiple \nethnic groups",
+            "Black, Black British, \nBlack Welsh, \nCaribbean or African",
+            "Asian, Asian \nBritish or \nAsian Welsh",
+            "Older \nmales (65+)",
+            "Working age \nmales (18-65)",
+            "Younger \nmales (< 18)",
+            "Older \nfemales (65+)",
+            "Working age \nfemales (18-65)",
+            "Younger \nfemales (< 18)"
+          )
+        ) +
+        annotate(geom = "text", x = 0.94, y = 11.4, label = "Age & Gender", colour = "#717171") +
+        geom_hline(yintercept = 5.5, size = 0.1, linetype = "dotted") +
+        annotate(geom = "text", x = 0.99, y = 5.4, label = "Ethnicity", colour = "#717171")
+    }
   } else if (
     any(grepl("Younger", unique(data$variable), fixed = TRUE)) &&
       as.character(length(unique(data$variable))) == 6
@@ -266,25 +317,71 @@ jitter_plot_selected <- function(data, selected_areas) {
     any(grepl("Younger", unique(data$variable), fixed = TRUE)) &&
       as.character(length(unique(data$variable))) == 11
   ) {
-    plot <- plot +
-      scale_y_discrete(
-        limits = c(
-          "White",
-          "Other ethnic \ngroup",
-          "Mixed or Multiple \nethnic groups",
-          "Black, Black British, \nBlack Welsh, \nCaribbean or African",
-          "Asian, Asian \nBritish or \nAsian Welsh",
-          "Older \nmales (65+)",
-          "Working age \nmales (18-65)",
-          "Younger \nmales (< 18)",
-          "Older \nfemales (65+)",
-          "Working age \nfemales (18-65)",
-          "Younger \nfemales (< 18)"
-        )
-      ) +
-      annotate(geom = "text", x = 0.94, y = 11.4, label = "Age & Gender", colour = "#717171") +
-      geom_hline(yintercept = 5.5, size = 0.1, linetype = "dotted") +
-      annotate(geom = "text", x = 0.99, y = 5.4, label = "Ethnicity", colour = "#717171")
+    if (
+      any(grepl("Younger \nfemales (< 20)", unique(data$variable), fixed = TRUE)) # Northern Ireland LTLA demographics
+    ) {
+      plot <- plot +
+        scale_y_discrete(
+          limits = c(
+            "White",
+            "Other ethnic \ngroup",
+            "Mixed or Multiple \nethnic groups",
+            "Black",
+            "Asian",
+            "Older \nmales (65+)",
+            "Working age \nmales (20-64)",
+            "Younger \nmales (< 20)",
+            "Older \nfemales (65+)",
+            "Working age \nfemales (20-64)",
+            "Younger \nfemales (< 20)"
+          )
+        ) +
+        annotate(geom = "text", x = 0.94, y = 11.4, label = "Age & Gender", colour = "#717171") +
+        geom_hline(yintercept = 5.5, size = 0.1, linetype = "dotted") +
+        annotate(geom = "text", x = 0.99, y = 5.4, label = "Ethnicity", colour = "#717171")
+    } else if (
+      any(grepl("Younger \nfemales (< 16)", unique(data$variable), fixed = TRUE)) # Northern Ireland HSCT demographics
+    ) {
+      plot <- plot +
+        scale_y_discrete(
+          limits = c(
+            "White",
+            "Other ethnic \ngroup",
+            "Mixed or Multiple \nethnic groups",
+            "Black",
+            "Asian",
+            "Older \nmales (65+)",
+            "Working age \nmales (16-64)",
+            "Younger \nmales (< 16)",
+            "Older \nfemales (65+)",
+            "Working age \nfemales (16-64)",
+            "Younger \nfemales (< 16)"
+          )
+        ) +
+        annotate(geom = "text", x = 0.94, y = 11.4, label = "Age & Gender", colour = "#717171") +
+        geom_hline(yintercept = 5.5, size = 0.1, linetype = "dotted") +
+        annotate(geom = "text", x = 0.99, y = 5.4, label = "Ethnicity", colour = "#717171")
+    } else {
+      plot <- plot +
+        scale_y_discrete(
+          limits = c(
+            "White",
+            "Other ethnic \ngroup",
+            "Mixed or Multiple \nethnic groups",
+            "Black, Black British, \nBlack Welsh, \nCaribbean or African",
+            "Asian, Asian \nBritish or \nAsian Welsh",
+            "Older \nmales (65+)",
+            "Working age \nmales (18-65)",
+            "Younger \nmales (< 18)",
+            "Older \nfemales (65+)",
+            "Working age \nfemales (18-65)",
+            "Younger \nfemales (< 18)"
+          )
+        ) +
+        annotate(geom = "text", x = 0.94, y = 11.4, label = "Age & Gender", colour = "#717171") +
+        geom_hline(yintercept = 5.5, size = 0.1, linetype = "dotted") +
+        annotate(geom = "text", x = 0.99, y = 5.4, label = "Ethnicity", colour = "#717171")
+    }
   } else if (
     any(grepl("Younger", unique(data$variable), fixed = TRUE)) &&
       as.character(length(unique(data$variable))) == 6
